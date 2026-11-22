@@ -1,0 +1,11 @@
+{
+  "min_score": 0.35,
+  "auto_score": 0.75,
+  "critical": ["indicator_abnormal", "smoke", "intrusion"],
+  "dedup_window_s": 300,
+  "sla_minutes": {"P1": 60, "P2": 240, "P3": 1440},
+  "model_version": "stub-1.0",
+  "detector_timeout_s": 3.0,
+  "max_rows": 200,
+  "note": "阈值外置：新增缺陷类型或调整自动建单门槛，只改本文件，不改业务代码。"
+}

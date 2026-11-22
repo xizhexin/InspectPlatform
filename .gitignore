@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+data/*.db
+data/*.db-*
+reports/*.html
+.pytest_cache/
+
+# 本地求职材料，不随代码发布
+docs/interview_qa.md
+docs/interview_l1_qa.md
+docs/resume_bullets.md

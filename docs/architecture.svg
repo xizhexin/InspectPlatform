@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 494" width="100%" role="img">
+<title>SmartInspect 园区智能巡检平台整体架构</title>
+<desc>外部输入经接入层进入业务层，业务层调用 AI 层推理并通过数据层落库，最终输出看板、指标与训练反馈。</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<rect x="80" y="40" width="180" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="170" y="58" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#444441" text-anchor="middle" dominant-baseline="central">摄像头 · 6 个点位</text>
+<text x="170" y="74" font-family="var(--font-sans)" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">按计划定时抓帧</text>
+
+<rect x="420" y="40" width="180" height="44" rx="8" fill="#FFFFFF" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="510" y="58" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#444441" text-anchor="middle" dominant-baseline="central">操作员 / 外部系统</text>
+<text x="510" y="74" font-family="var(--font-sans)" font-size="12" fill="#5F5E5A" text-anchor="middle" dominant-baseline="central">人工报修 · 复核</text>
+
+<path d="M170 84L170 106" fill="none" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M510 84L510 106" fill="none" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="40" y="110" width="600" height="56" rx="10" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+<text x="60" y="132" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#0C447C" dominant-baseline="central">接入层</text>
+<text x="60" y="151" font-family="var(--font-sans)" font-size="12" fill="#185FA5" dominant-baseline="central">HTTP 12 个路由 · X-Token 鉴权 · 角色 + 区域校验 · Api.dispatch 集中分发</text>
+
+<path d="M340 166L340 194" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="40" y="196" width="600" height="110" rx="10" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+<text x="58" y="216" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#0C447C" dominant-baseline="central">业务层</text>
+
+<rect x="58" y="226" width="120" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="118" y="248" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">计划调度</text>
+<text x="118" y="266" font-family="var(--font-sans)" font-size="12" fill="#185FA5" text-anchor="middle" dominant-baseline="central">到期触发 · 防重跑</text>
+
+<path d="M178 254L202 254" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="204" y="226" width="120" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="264" y="248" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">检测编排</text>
+<text x="264" y="266" font-family="var(--font-sans)" font-size="12" fill="#185FA5" text-anchor="middle" dominant-baseline="central">分流 · 去重 · 降级</text>
+
+<path d="M324 254L348 254" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="350" y="226" width="120" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="410" y="248" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">工单状态机</text>
+<text x="410" y="266" font-family="var(--font-sans)" font-size="12" fill="#185FA5" text-anchor="middle" dominant-baseline="central">流转 · SLA</text>
+
+<path d="M470 254L494 254" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="496" y="226" width="120" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="556" y="248" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">RBAC</text>
+<text x="556" y="266" font-family="var(--font-sans)" font-size="12" fill="#185FA5" text-anchor="middle" dominant-baseline="central">角色 + 区域过滤</text>
+
+<path d="M264 306L264 322L165 322L165 338" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#arrow)"/>
+<path d="M264 306L264 322L475 322L475 338" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="40" y="340" width="250" height="64" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="58" y="362" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#085041" dominant-baseline="central">AI 层 · Detector 协议</text>
+<text x="58" y="382" font-family="var(--font-sans)" font-size="12" fill="#0F6E56" dominant-baseline="central">Stub 全链路测试 / ONNX 接真权重</text>
+
+<rect x="310" y="340" width="330" height="64" rx="10" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
+<text x="328" y="362" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#0C447C" dominant-baseline="central">数据层 · Repo</text>
+<text x="328" y="382" font-family="var(--font-sans)" font-size="12" fill="#185FA5" dominant-baseline="central">事务 / 幂等 / 审计 → 7 张表 + 5 索引</text>
+
+<path d="M475 404L475 432" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="310" y="434" width="330" height="40" rx="10" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="475" y="454" font-family="var(--font-sans)" font-size="12" fill="#0C447C" text-anchor="middle" dominant-baseline="central">看板 · metrics · feedback 误报样本导出</text>
+</svg>

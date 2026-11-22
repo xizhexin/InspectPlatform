@@ -1,0 +1,12 @@
+# 核心链路零第三方依赖：Python 3.10+ 标准库即可运行。
+# python -m unittest discover -s tests -v
+# python bench.py --frames 2000
+# python run.py --no-serve
+
+# ---- 可选：ONNX 检测器（ai/detector.py OnnxDetector）----
+# onnxruntime>=1.16
+# numpy>=1.24
+
+# ---- 可选：FastAPI 适配器（app/api_fastapi.py）----
+# fastapi>=0.110
+# uvicorn>=0.29
