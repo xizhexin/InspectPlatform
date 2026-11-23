@@ -12,18 +12,19 @@
 
 ```bash
 cd InspectPlatform
-pip install -r requirements.txt                   # 唯一依赖：sqlalchemy>=2.0
-python -m unittest discover -s tests -v          # 29 个用例
+pip install -r requirements.txt                   # sqlalchemy + fastapi + uvicorn
+python -m unittest discover -s tests -v          # 30 个用例
 python bench.py --frames 2000 --workers 8         # 压测，生成 reports/metrics.json + 看板
 python run.py --no-serve                          # 只初始化 + 生成看板
 python run.py                                     # 起服务：http://127.0.0.1:8000/dashboard
 ```
 
-数据层用 SQLAlchemy 2.0 ORM，除此之外全部是标准库（HTTP 服务、看板渲染、压测）。
+数据层 SQLAlchemy 2.0 ORM，接入层 FastAPI + uvicorn，其余（看板渲染、压测、配置）是标准库。
 
-可选增强（需另装 fastapi / onnxruntime / numpy）：
+服务起来后另有 `/docs`（Swagger UI，12 个接口可现场调）和 `/redoc`。
+也可以直接用工厂模式起：
 ```bash
-uvicorn app.api_fastapi:app --port 8000          # FastAPI 适配器，复用同一套业务逻辑
+uvicorn app.main:create_app --factory --port 8000
 ```
 Docker 文件已提供，**本机 Docker daemon 未启动，build/run 未执行验证**。
 
@@ -39,14 +40,13 @@ app/ticket.py             工单状态机 + SLA 逾期
 app/auth.py               RBAC + 行级数据权限
 app/repo.py               数据访问：事务、幂等、分页、审计、计划抢占、误报导出
 app/scheduler.py          巡检计划防重跑 + 崩溃残留回收
-app/main.py               REST API（标准库 http.server）+ Handler
-app/api_fastapi.py        可选 FastAPI 适配器
+app/main.py               FastAPI 应用：路由 + Depends 鉴权 + Pydantic 请求体
 ai/detector.py            Detector 协议 / StubDetector / OnnxDetector
 ai/service.py             编排：超时保护 / 三档分流 / 去重 / 复核 / 降级 / 人工报修
 ai/rules.py               规则入口（实现在 config.py，避免循环依赖）
 web/dashboard.py          静态看板渲染
 bench.py                  并发压测 + 指标落盘
-tests/                    6 个模块 / 29 个用例
+tests/                    6 个模块 / 30 个用例
 ```
 
 ## 数据流
@@ -101,20 +101,20 @@ demo token：`tk-admin`(全区域管理员) / `tk-op-a`(A 区操作员) / `tk-op
 | 指标 | 实测值 |
 |---|---|
 | 压测规模 | 2000 帧 / 8 并发 / 6 点位 / 模拟 1 小时窗口 |
-| 总耗时 / 吞吐 | 15.398 s / **129.89 fps** |
-| 延迟 p50 / p95 / p99 / max | 60.99 / **73.56** / 93.5 / 129.86 ms |
-| 自动建单 / 转复核 / 低分丢弃 | 109 / 179 / 273（并发下 ±1 波动） |
+| 总耗时 / 吞吐 | 5.610 s / **356.48 fps** |
+| 延迟 p50 / p95 / p99 / max | 21.97 / **26.46** / 44.45 / 58.85 ms |
+| 自动建单 / 转复核 / 低分丢弃 | 108 / 180 / 273（并发下 ±1 波动） |
 | 幂等去重命中 | 3428 次（去重率 92.25%） |
 | 唯一事件键 | 288（= 6 点位 × 4 缺陷 × 12 个 300s 时间桶，与设计一致） |
 | **重复建单违规** | **0** |
 | AI 全故障降级专项 | 50 帧全部标记 degraded，人工报修 50/50 成功，主流程成功率 **100%** |
-| 单元测试 | **29/29 通过**（1.06 s） |
+| 单元测试 | **30/30 通过**（1.27 s） |
 
 > 压测刻意让同一 (点位, 缺陷) 重复出现以压幂等路径，**92.25% 是负载重复率，不是业务优化前后的告警下降比例**，不要写成「告警下降 92%」。
 
 ## 已实测 / 未实测（如实标注）
 
-- ✅ 已实测：全部业务链路、29 个单测、并发压测、降级专项、标准库 HTTP 路由、看板生成、FastAPI 适配器 import。
+- ✅ 已实测：全部业务链路、30 个单测、并发压测、降级专项、FastAPI 路由（TestClient 走真实 HTTP 层）、`run.py` 起 uvicorn 后逐个接口打过一遍（health / login / devices / frames / tickets / transition / metrics / dashboard / openapi / 404）。
 - ⚠️ 接口预留、未接真实权重：`OnnxDetector`（需注入 `decode`；未下载 YOLO/ONNX 权重，不声明 mAP/精度）。
 - ⚠️ 未执行：Docker build/run（本机 daemon 未启动）、真实摄像头视频流、生产数据库。
 - 检测器 `StubDetector` 用合成帧，**只用于验证业务系统能力，不产生任何模型精度结论**。
@@ -127,7 +127,7 @@ demo token：`tk-admin`(全区域管理员) / `tk-op-a`(A 区操作员) / `tk-op
 
 ## 已知限制与生产演进
 
-- SQLite 单写者 + 进程内锁串行化所有写事务，是本次压测 p95 的主要来源 → 生产换 MySQL / GaussDB，拆连接池与读写分离。
+- SQLite 单写者 + 进程内锁串行化所有写事务，是本次压测 p95 的主要来源 → 生产换 MySQL / GaussDB，拆连接池与读写分离。已开 WAL（读写不互斥）并按线程分配 Session，`BEGIN IMMEDIATE` 会让读事务也去抢写锁，所以改成普通 `BEGIN` + 写方法统一加锁。
 - 推理超时用线程池 `future.result(timeout=...)`，**Python 无法强制取消已提交线程**，超时后后台线程仍会跑完 → 生产改为独立推理服务 + 请求级超时/熔断。
 - 登录用固定 token、权限是进程内查表 → 生产接 SSO + 网关鉴权。
 - 点位规模上去后，计划调度换分布式锁 / 消息队列；事件表按时间分区。

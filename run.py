@@ -5,9 +5,11 @@ import argparse
 import logging
 from pathlib import Path
 
+import uvicorn
+
 from ai.detector import StubDetector
 from ai.service import InspectionService
-from app.main import make_server
+from app.main import create_app
 from app.repo import Repo
 from web.dashboard import render
 
@@ -34,16 +36,12 @@ def main():
         service.close()
         repo.close()
         return
-    srv = make_server(args.host, args.port, repo=repo, service=service)
+
+    app = create_app(repo, service)
     print(f"API: http://{args.host}:{args.port}/dashboard  (X-Token: tk-admin)")
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        srv.server_close()
-        service.close()
-        repo.close()
+    print(f"Docs: http://{args.host}:{args.port}/docs")
+    # 关闭时由 app 的 lifespan 统一 close service / repo
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

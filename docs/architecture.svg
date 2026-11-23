@@ -20,7 +20,7 @@
 
 <rect x="40" y="110" width="600" height="56" rx="10" fill="#FFFFFF" stroke="#185FA5" stroke-width="0.5"/>
 <text x="60" y="132" font-family="var(--font-sans)" font-size="13" font-weight="500" fill="#0C447C" dominant-baseline="central">接入层</text>
-<text x="60" y="151" font-family="var(--font-sans)" font-size="12" fill="#185FA5" dominant-baseline="central">HTTP 12 个路由 · X-Token 鉴权 · 角色 + 区域校验 · Api.dispatch 集中分发</text>
+<text x="60" y="151" font-family="var(--font-sans)" font-size="12" fill="#185FA5" dominant-baseline="central">HTTP 12 个路由 · FastAPI + uvicorn · Depends 鉴权 · Pydantic 校验</text>
 
 <path d="M340 166L340 194" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
 

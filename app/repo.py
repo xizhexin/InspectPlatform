@@ -6,6 +6,7 @@ claim_plan 的 UPDATE ... WHERE running=0（CAS 抢占）。
 """
 from __future__ import annotations
 
+import functools
 import threading
 from contextlib import contextmanager
 from datetime import datetime
@@ -24,15 +25,49 @@ def _stamp(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
 
+def _write(fn):
+    """写方法统一拿全局可重入锁：SQLite 单写者，多线程写必须串行。
+
+    RLock 可重入，所以被 transaction() 包着调用时不会自锁。
+    """
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self.lock:
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 class Repo:
     def __init__(self, db_path, *, rules=None, seed=True, reset=False):
         self.rules = rules or load_rules()
         self.engine = init_db(db_path, seed=seed, reset=reset)
         self.Session = make_session(self.engine)
-        # 共用单个 Session：SQLite 单写者，写操作已被下面的 lock 串行化
-        self.session = self.Session()
-        self.lock = threading.RLock()   # 可重入，事务嵌套时不会自锁
-        self._depth = 0                 # 事务嵌套深度
+        # Session 不是线程安全的：FastAPI 的 sync 路由跑在线程池里，
+        # 所以按线程各建一个，并记下来好在 close 时统一关掉
+        self._local = threading.local()
+        self._sessions: set = set()
+        self._sessions_lock = threading.Lock()
+        self.lock = threading.RLock()   # 可重入，全局串行化写事务
+
+    @property
+    def session(self):
+        sess = getattr(self._local, "session", None)
+        if sess is None:
+            sess = self.Session()
+            self._local.session = sess
+            with self._sessions_lock:
+                self._sessions.add(sess)
+        return sess
+
+    @property
+    def _depth(self) -> int:
+        return getattr(self._local, "depth", 0)
+
+    @_depth.setter
+    def _depth(self, value: int) -> None:
+        self._local.depth = value
 
     # ---------------- 事务与连接 ----------------
 
@@ -62,11 +97,17 @@ class Repo:
             self.session.commit()
 
     def close(self):
-        self.session.close()
+        # 线程池里的 Session 不关掉，SQLite 文件会一直被占着
+        with self._sessions_lock:
+            sessions = list(self._sessions)
+            self._sessions.clear()
+        for sess in sessions:
+            sess.close()
         self.engine.dispose()
 
     # ---------------- 事件 / 工单 / 复核 ----------------
 
+    @_write
     def save_event(self, ev: Event, route: str, now: datetime | None = None):
         """幂等插入：撞唯一索引返回 None。
 
@@ -99,6 +140,7 @@ class Repo:
             select(orm.Event.id).where(orm.Event.dedup_key == dedup_key)
         ) is not None
 
+    @_write
     def create_ticket(self, point_id, cls, priority, event_id=None,
                       now: datetime | None = None, assignee=None) -> int:
         now = now or datetime.now()
@@ -112,6 +154,7 @@ class Repo:
         self._commit_if_top()
         return t.id
 
+    @_write
     def push_review(self, event_id: int, now: datetime | None = None) -> int:
         now = now or datetime.now()
         r = orm.Review(event_id=event_id, status="PENDING", created_at=_stamp(now))
@@ -120,6 +163,7 @@ class Repo:
         self._commit_if_top()
         return r.id
 
+    @_write
     def audit(self, actor, action, target=None, detail=None,
               now: datetime | None = None):
         now = now or datetime.now()
@@ -139,6 +183,7 @@ class Repo:
             stmt = stmt.where(orm.Device.area == area)
         return [d.to_dict() for d in self.session.scalars(stmt)]
 
+    @_write
     def add_device(self, code, name, area, owner_group) -> int:
         d = orm.Device(code=code, name=name, area=area, owner_group=owner_group,
                        enabled=1, created_at=_stamp(datetime.now()))
@@ -217,6 +262,7 @@ class Repo:
 
     # ---------------- 状态机落库 ----------------
 
+    @_write
     def transition_ticket(self, ticket_id, action, user, now=None):
         with self.transaction():
             t = self.session.get(orm.Ticket, ticket_id)
@@ -235,6 +281,7 @@ class Repo:
                        f"{old_status}->{patch['status']}")
             return {"id": ticket_id, **patch}
 
+    @_write
     def resolve_review(self, review_id, action, reviewer, note=None, now=None):
         with self.transaction():
             r = self.session.get(orm.Review, review_id)
@@ -258,6 +305,7 @@ class Repo:
 
     # ---------------- 巡检计划 ----------------
 
+    @_write
     def claim_plan(self, now_ts: float):
         """抢占到期计划：先查候选，再逐条 CAS 抢。
 
@@ -289,12 +337,14 @@ class Repo:
                                     "interval_s": p.interval_s})
         return claimed
 
+    @_write
     def release_plan(self, plan_id: int):
         self.session.execute(
             update(orm.Plan).where(orm.Plan.id == plan_id).values(running=0)
             .execution_options(synchronize_session=False))
         self._commit_if_top()
 
+    @_write
     def recover_stale(self, now_ts: float, max_age_s: float = 600):
         """回收崩溃残留的 running=1，阈值需大于单次巡检最长耗时。"""
         res = self.session.execute(

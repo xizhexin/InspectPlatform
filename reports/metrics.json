@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-23T11:55:26",
+  "generated_at": "2026-11-23T16:37:38",
   "environment": {
     "python": "3.11.4",
     "platform": "Windows-10-10.0.26320-SP0",
@@ -13,25 +13,25 @@
     "detector": "StubDetector (synthetic frames, NOT a trained model)"
   },
   "results": {
-    "elapsed_s": 15.398,
-    "throughput_fps": 129.89,
+    "elapsed_s": 5.61,
+    "throughput_fps": 356.48,
     "latency_ms": {
-      "p50": 60.99,
-      "p95": 73.563,
-      "p99": 93.5,
-      "max": 129.861
+      "p50": 21.968,
+      "p95": 26.455,
+      "p99": 44.449,
+      "max": 58.848
     },
-    "auto_tickets": 109,
-    "sent_to_review": 179,
+    "auto_tickets": 108,
+    "sent_to_review": 180,
     "deduplicated": 3428,
     "discarded_low_confidence": 273,
     "dedup_rate": 0.9225
   },
   "integrity": {
     "unique_event_keys": 288,
-    "tickets": 109,
+    "tickets": 108,
     "duplicate_ticket_violations": 0,
-    "pending_reviews": 179,
+    "pending_reviews": 180,
     "degraded_calls": 0
   },
   "degrade_test": {

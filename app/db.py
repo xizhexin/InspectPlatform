@@ -44,13 +44,16 @@ def make_engine(path: str | Path, *, readonly: bool = False):
     @event.listens_for(engine, "connect")
     def _on_connect(dbapi_conn, _record):          # noqa: ANN001
         dbapi_conn.execute("PRAGMA foreign_keys=ON")
+        # WAL：读写不互斥（默认日志模式下读锁会卡住写）；busy_timeout 让抢锁等 5 秒
+        dbapi_conn.execute("PRAGMA journal_mode=WAL")
+        dbapi_conn.execute("PRAGMA busy_timeout=5000")
         # 关掉 pysqlite 的隐式 BEGIN，事务交给 SQLAlchemy，否则会重复开事务
         dbapi_conn.isolation_level = None
 
     @event.listens_for(engine, "begin")
     def _on_begin(conn):                           # noqa: ANN001
-        # 一开事务就拿写锁，避免并发时锁升级失败
-        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        # isolation_level=None 后必须自己发 BEGIN，否则语句会逐条自动提交
+        conn.exec_driver_sql("BEGIN")
 
     return engine
 
