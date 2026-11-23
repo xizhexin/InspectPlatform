@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-11-10T06:44:29",
+  "generated_at": "2026-11-23T11:55:26",
   "environment": {
-    "python": "3.13.14",
-    "platform": "Windows-11-10.0.26320-SP0",
-    "third_party_deps": "none (stdlib only)"
+    "python": "3.11.4",
+    "platform": "Windows-10-10.0.26320-SP0",
+    "third_party_deps": "sqlalchemy 2.0.25"
   },
   "workload": {
     "frames": 2000,
@@ -13,25 +13,25 @@
     "detector": "StubDetector (synthetic frames, NOT a trained model)"
   },
   "results": {
-    "elapsed_s": 19.348,
-    "throughput_fps": 103.37,
+    "elapsed_s": 15.398,
+    "throughput_fps": 129.89,
     "latency_ms": {
-      "p50": 73.679,
-      "p95": 106.603,
-      "p99": 134.307,
-      "max": 218.788
+      "p50": 60.99,
+      "p95": 73.563,
+      "p99": 93.5,
+      "max": 129.861
     },
-    "auto_tickets": 108,
-    "sent_to_review": 180,
+    "auto_tickets": 109,
+    "sent_to_review": 179,
     "deduplicated": 3428,
     "discarded_low_confidence": 273,
     "dedup_rate": 0.9225
   },
   "integrity": {
     "unique_event_keys": 288,
-    "tickets": 108,
+    "tickets": 109,
     "duplicate_ticket_violations": 0,
-    "pending_reviews": 180,
+    "pending_reviews": 179,
     "degraded_calls": 0
   },
   "degrade_test": {

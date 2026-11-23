@@ -16,13 +16,13 @@ class AuthTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_authenticate(self):
-        self.assertIsNone(authenticate(self.repo.conn, "bad-token"))
-        u = authenticate(self.repo.conn, "tk-op-a")
+        self.assertIsNone(authenticate(self.repo.session, "bad-token"))
+        u = authenticate(self.repo.session, "tk-op-a")
         self.assertEqual(u.role, "operator")
         self.assertEqual(u.area, "A")
 
     def test_role_permission(self):
-        viewer = authenticate(self.repo.conn, "tk-view-a")
+        viewer = authenticate(self.repo.session, "tk-view-a")
         with self.assertRaises(PermissionError):
             require(viewer, "device:write")
         with self.assertRaises(PermissionError):
@@ -32,8 +32,8 @@ class AuthTest(unittest.TestCase):
             require(None, "read")
 
     def test_area_scope(self):
-        op = authenticate(self.repo.conn, "tk-op-a")
-        admin = authenticate(self.repo.conn, "tk-admin")
+        op = authenticate(self.repo.session, "tk-op-a")
+        admin = authenticate(self.repo.session, "tk-admin")
         self.assertEqual(area_filter(op), "A")
         self.assertIsNone(area_filter(admin))
         self.assertTrue(can_see(op, "A"))
@@ -41,7 +41,7 @@ class AuthTest(unittest.TestCase):
         self.assertEqual(len(self.repo.devices(area_filter(op))), 3)
 
     def test_cross_area_ticket_transition_denied(self):
-        op = authenticate(self.repo.conn, "tk-op-a")
+        op = authenticate(self.repo.session, "tk-op-a")
         tid = self.repo.create_ticket(4, "rust", "P2")   # 4 号设备在 B 区
         with self.assertRaises(PermissionError):
             self.repo.transition_ticket(tid, "CLAIM", op)

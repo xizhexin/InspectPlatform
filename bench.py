@@ -20,6 +20,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import sqlalchemy
+
 from ai.detector import StubDetector
 from ai.service import InspectionService
 from app.repo import Repo
@@ -109,20 +111,15 @@ def main():
     svc.close()
 
     s = repo.stats()
-    violations = repo.conn.execute(
-        "SELECT COUNT(*) FROM (SELECT e.dedup_key, COUNT(t.id) n "
-        "FROM ticket t JOIN event e ON e.id = t.event_id "
-        "GROUP BY e.dedup_key HAVING n > 1)"
-    ).fetchone()[0]
-    unique_keys = repo.conn.execute(
-        "SELECT COUNT(DISTINCT dedup_key) FROM event").fetchone()[0]
+    violations = repo.duplicate_ticket_violations()
+    unique_keys = repo.unique_dedup_keys()
 
     metrics = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "environment": {
             "python": sys.version.split()[0],
             "platform": platform.platform(),
-            "third_party_deps": "none (stdlib only)",
+            "third_party_deps": f"sqlalchemy {sqlalchemy.__version__}",
         },
         "workload": {
             "frames": args.frames,

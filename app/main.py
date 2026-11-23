@@ -38,17 +38,14 @@ class Api:
         self.service = service
 
     def _user(self, headers, perm):
-        return require(authenticate(self.repo.conn, _token(headers)), perm)
+        return require(authenticate(self.repo.session, _token(headers)), perm)
 
     def dispatch(self, method, path, query, body, headers):
         if path == "/health":
             return 200, {"status": "ok"}
 
         if path == "/api/login" and method == "POST":
-            row = self.repo.conn.execute(
-                "SELECT username, role, area, token FROM user WHERE username = ?",
-                (body.get("username", ""),),
-            ).fetchone()
+            row = self.repo.find_user(body.get("username", ""))
             if row is None:
                 return 401, {"error": "unknown user"}
             return 200, {"token": row["token"], "role": row["role"],
@@ -93,11 +90,10 @@ class Api:
         if path == "/api/frames" and method == "POST":
             user = self._user(headers, "frame:push")
             pid = int(body["point_id"])
-            dev = self.repo.conn.execute(
-                "SELECT area FROM device WHERE id = ?", (pid,)).fetchone()
-            if dev is None:
+            dev_area = self.repo.device_area(pid)
+            if dev_area is None:
                 return 404, {"error": "device not found"}
-            if not can_see(user, dev["area"]):
+            if not can_see(user, dev_area):
                 return 403, {"error": "cross-area access denied"}
             return 200, self.service.handle_frame(pid, {"defects": body.get("defects", [])})
 

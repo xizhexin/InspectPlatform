@@ -1,6 +1,9 @@
 """RBAC + 行级数据权限。area='*' 表示全部区域。"""
 from __future__ import annotations
 
+from sqlalchemy import select
+
+from . import orm
 from .models import User
 
 ROLE_PERMS = {
@@ -13,11 +16,11 @@ ROLE_PERMS = {
 }
 
 
-def authenticate(conn, token: str) -> User | None:
+def authenticate(session, token: str) -> User | None:
     if not token:
         return None
-    row = conn.execute("SELECT * FROM user WHERE token = ?", (token,)).fetchone()
-    return User(**dict(row)) if row else None
+    row = session.scalar(select(orm.User).where(orm.User.token == token))
+    return User(**row.to_dict()) if row else None
 
 
 def require(user: User | None, perm: str) -> User:

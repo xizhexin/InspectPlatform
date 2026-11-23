@@ -1,75 +1,120 @@
-"""数据访问层：事务、幂等、分页、状态机落库、审计、计划抢占。"""
+"""数据访问层（ORM 版）：事务、幂等、分页、状态机落库、审计、计划抢占。
+
+原子性仍由数据库保证：
+- 幂等：sqlite_insert(...).on_conflict_do_nothing(index_elements=["dedup_key"])
+- 计划抢占：UPDATE ... WHERE running=0，用 rowcount 判定
+"""
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
 from config import load_rules, priority_of, sla_due
-from . import ticket as ticket_mod
-from .db import init_db, transaction
+
+from . import orm, ticket as ticket_mod
+from .db import init_db, make_session
 from .models import Event
+
+
+def _stamp(dt: datetime) -> str:
+    return dt.isoformat(timespec="seconds")
 
 
 class Repo:
     def __init__(self, db_path, *, rules=None, seed=True, reset=False):
         self.rules = rules or load_rules()
-        self.conn = init_db(db_path, seed=seed, reset=reset)
+        self.engine = init_db(db_path, seed=seed, reset=reset)
+        self.Session = make_session(self.engine)
+        self.session = self.Session()
         self.lock = threading.RLock()
+        self._depth = 0          # 事务嵌套深度
 
+    # ---------------- 事务与连接 ----------------
+
+    @contextmanager
     def transaction(self):
-        return transaction(self.conn, self.lock)
+        """显式事务。嵌套时复用同一事务，最外层负责 commit/rollback。"""
+        with self.lock:
+            self._depth += 1
+            try:
+                yield self.session
+                self._depth -= 1
+                if self._depth == 0:
+                    self.session.commit()
+            except Exception:
+                self._depth -= 1
+                if self._depth == 0:
+                    self.session.rollback()
+                raise
+
+    def _commit_if_top(self):
+        if self._depth == 0:
+            self.session.commit()
 
     def close(self):
-        self.conn.close()
+        self.session.close()
+        self.engine.dispose()
 
     # ---------------- 事件 / 工单 / 复核 ----------------
 
     def save_event(self, ev: Event, route: str, now: datetime | None = None):
-        """INSERT OR IGNORE：唯一索引兜底并发去重。返回 event_id，重复返回 None。"""
+        """幂等插入：唯一索引撞了返回 None。"""
         now = now or datetime.now()
-        cur = self.conn.execute(
-            "INSERT OR IGNORE INTO event"
-            "(dedup_key, point_id, cls, score, model_ver, route, degraded, ts) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (ev.key(self.rules["dedup_window_s"]), ev.point_id, ev.cls,
-             ev.score, ev.model_ver, route, int(ev.degraded),
-             now.isoformat(timespec="seconds")),
+        stmt = (
+            sqlite_insert(orm.Event)
+            .values(
+                dedup_key=ev.key(self.rules["dedup_window_s"]),
+                point_id=ev.point_id,
+                cls=ev.cls,
+                score=ev.score,
+                model_ver=ev.model_ver,
+                route=route,
+                degraded=int(ev.degraded),
+                ts=_stamp(now),
+            )
+            .on_conflict_do_nothing(index_elements=["dedup_key"])
         )
-        return cur.lastrowid if cur.rowcount else None
+        res = self.session.execute(stmt)
+        self._commit_if_top()
+        return res.lastrowid if res.rowcount else None
 
     def seen(self, dedup_key: str) -> bool:
-        return self.conn.execute(
-            "SELECT 1 FROM event WHERE dedup_key = ?", (dedup_key,)
-        ).fetchone() is not None
+        return self.session.scalar(
+            select(orm.Event.id).where(orm.Event.dedup_key == dedup_key)
+        ) is not None
 
     def create_ticket(self, point_id, cls, priority, event_id=None,
                       now: datetime | None = None, assignee=None) -> int:
         now = now or datetime.now()
-        stamp = now.isoformat(timespec="seconds")
-        cur = self.conn.execute(
-            "INSERT INTO ticket(event_id, point_id, cls, priority, status, assignee,"
-            "created_at, updated_at, sla_due_at) VALUES(?,?,?,?,'OPEN',?,?,?,?)",
-            (event_id, point_id, cls, priority, assignee, stamp, stamp,
-             sla_due(priority, now, self.rules)),
-        )
-        return cur.lastrowid
+        stamp = _stamp(now)
+        t = orm.Ticket(event_id=event_id, point_id=point_id, cls=cls,
+                       priority=priority, status="OPEN", assignee=assignee,
+                       created_at=stamp, updated_at=stamp,
+                       sla_due_at=sla_due(priority, now, self.rules))
+        self.session.add(t)
+        self.session.flush()
+        self._commit_if_top()
+        return t.id
 
     def push_review(self, event_id: int, now: datetime | None = None) -> int:
         now = now or datetime.now()
-        return self.conn.execute(
-            "INSERT INTO review(event_id, status, created_at) VALUES(?,'PENDING',?)",
-            (event_id, now.isoformat(timespec="seconds")),
-        ).lastrowid
+        r = orm.Review(event_id=event_id, status="PENDING", created_at=_stamp(now))
+        self.session.add(r)
+        self.session.flush()
+        self._commit_if_top()
+        return r.id
 
     def audit(self, actor, action, target=None, detail=None,
               now: datetime | None = None):
         now = now or datetime.now()
-        self.conn.execute(
-            "INSERT INTO audit_log(actor, action, target, detail, ts) VALUES(?,?,?,?,?)",
-            (actor, action, target, detail, now.isoformat(timespec="seconds")),
-        )
-        if not self.conn.in_transaction:
-            self.conn.commit()
+        self.session.add(orm.AuditLog(actor=actor, action=action, target=target,
+                                      detail=detail, ts=_stamp(now)))
+        self.session.flush()
+        self._commit_if_top()
 
     def mark_degraded(self, point_id: int, message: str):
         self.audit("system", "detector_degraded", f"device:{point_id}", message)
@@ -77,163 +122,179 @@ class Repo:
     # ---------------- 查询 ----------------
 
     def devices(self, area=None):
-        sql = "SELECT * FROM device"
-        args = []
+        stmt = select(orm.Device).order_by(orm.Device.id)
         if area:
-            sql += " WHERE area = ?"
-            args.append(area)
-        sql += " ORDER BY id"
-        return [dict(r) for r in self.conn.execute(sql, args).fetchall()]
+            stmt = stmt.where(orm.Device.area == area)
+        return [d.to_dict() for d in self.session.scalars(stmt)]
 
     def add_device(self, code, name, area, owner_group) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO device(code, name, area, owner_group, created_at) "
-            "VALUES(?,?,?,?,?)",
-            (code, name, area, owner_group,
-             datetime.now().isoformat(timespec="seconds")),
+        d = orm.Device(code=code, name=name, area=area, owner_group=owner_group,
+                       enabled=1, created_at=_stamp(datetime.now()))
+        self.session.add(d)
+        self.session.flush()
+        self._commit_if_top()
+        return d.id
+
+    def device_area(self, point_id: int):
+        return self.session.scalar(
+            select(orm.Device.area).where(orm.Device.id == point_id)
         )
-        if not self.conn.in_transaction:
-            self.conn.commit()
-        return cur.lastrowid
+
+    def find_user(self, username: str):
+        u = self.session.scalar(select(orm.User).where(orm.User.username == username))
+        return u.to_dict() if u else None
 
     def list_tickets(self, status=None, area=None, page=1, size=20):
-        where, args = [], []
+        stmt = select(orm.Ticket)
         if status:
-            where.append("status = ?")
-            args.append(status)
+            stmt = stmt.where(orm.Ticket.status == status)
         if area:
-            where.append("point_id IN (SELECT id FROM device WHERE area = ?)")
-            args.append(area)
-        clause = (" WHERE " + " AND ".join(where)) if where else ""
-        total = self.conn.execute(
-            "SELECT COUNT(*) FROM ticket" + clause, args
-        ).fetchone()[0]
-        rows = self.conn.execute(
-            "SELECT * FROM ticket" + clause +
-            " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-            args + [size, (page - 1) * size],
-        ).fetchall()
+            stmt = stmt.where(orm.Ticket.point_id.in_(
+                select(orm.Device.id).where(orm.Device.area == area)))
+        total = self.session.scalar(
+            select(func.count()).select_from(stmt.subquery()))
+        rows = self.session.scalars(
+            stmt.order_by(orm.Ticket.created_at.desc(), orm.Ticket.id.desc())
+                .limit(size).offset((page - 1) * size))
         return {"total": total, "page": page, "size": size,
-                "items": [dict(r) for r in rows]}
+                "items": [t.to_dict() for t in rows]}
 
     def list_reviews(self, status="PENDING", limit=50):
-        return [dict(r) for r in self.conn.execute(
-            "SELECT r.*, e.cls, e.score, e.point_id FROM review r "
-            "JOIN event e ON e.id = r.event_id "
-            "WHERE r.status = ? ORDER BY r.id DESC LIMIT ?", (status, limit)
-        ).fetchall()]
+        stmt = (select(orm.Review, orm.Event)
+                .join(orm.Event, orm.Event.id == orm.Review.event_id)
+                .where(orm.Review.status == status)
+                .order_by(orm.Review.id.desc()).limit(limit))
+        out = []
+        for r, e in self.session.execute(stmt):
+            d = r.to_dict()
+            d.update({"cls": e.cls, "score": e.score, "point_id": e.point_id})
+            out.append(d)
+        return out
 
     def stats(self):
-        c = self.conn
-        by_status = {r["status"]: r["n"] for r in c.execute(
-            "SELECT status, COUNT(*) n FROM ticket GROUP BY status")}
-        by_cls = {r["cls"]: r["n"] for r in c.execute(
-            "SELECT cls, COUNT(*) n FROM event GROUP BY cls")}
+        s = self.session
+        by_status = {row[0]: row[1] for row in s.execute(
+            select(orm.Ticket.status, func.count()).group_by(orm.Ticket.status))}
+        by_cls = {row[0]: row[1] for row in s.execute(
+            select(orm.Event.cls, func.count()).group_by(orm.Event.cls))}
         return {
-            "devices": c.execute("SELECT COUNT(*) FROM device").fetchone()[0],
-            "events": c.execute("SELECT COUNT(*) FROM event").fetchone()[0],
-            "tickets": c.execute("SELECT COUNT(*) FROM ticket").fetchone()[0],
-            "open_tickets": sum(n for s, n in by_status.items() if s != "CLOSED"),
-            "pending_reviews": c.execute(
-                "SELECT COUNT(*) FROM review WHERE status='PENDING'").fetchone()[0],
-            "degraded_calls": c.execute(
-                "SELECT COUNT(*) FROM audit_log WHERE action='detector_degraded'"
-            ).fetchone()[0],
-            "duplicate_guard_hits": c.execute(
-                "SELECT COUNT(*) FROM audit_log WHERE action='dedup_hit'"
-            ).fetchone()[0],
+            "devices": s.scalar(select(func.count()).select_from(orm.Device)),
+            "events": s.scalar(select(func.count()).select_from(orm.Event)),
+            "tickets": s.scalar(select(func.count()).select_from(orm.Ticket)),
+            "open_tickets": sum(n for st, n in by_status.items() if st != "CLOSED"),
+            "pending_reviews": s.scalar(
+                select(func.count()).select_from(orm.Review)
+                .where(orm.Review.status == "PENDING")),
+            "degraded_calls": s.scalar(
+                select(func.count()).select_from(orm.AuditLog)
+                .where(orm.AuditLog.action == "detector_degraded")),
+            "duplicate_guard_hits": s.scalar(
+                select(func.count()).select_from(orm.AuditLog)
+                .where(orm.AuditLog.action == "dedup_hit")),
             "by_status": by_status,
             "by_cls": by_cls,
         }
 
     def false_positives(self):
-        """复核判误报的事件，导出为训练反馈，形成数据闭环。"""
-        return [dict(r) for r in self.conn.execute(
-            "SELECT e.id, e.cls, e.score, e.point_id, r.note FROM review r "
-            "JOIN event e ON e.id = r.event_id WHERE r.status = 'REJECTED'"
-        ).fetchall()]
+        stmt = (select(orm.Event, orm.Review)
+                .join(orm.Review, orm.Review.event_id == orm.Event.id)
+                .where(orm.Review.status == "REJECTED"))
+        return [{"id": e.id, "cls": e.cls, "score": e.score,
+                 "point_id": e.point_id, "note": r.note}
+                for e, r in self.session.execute(stmt)]
 
     # ---------------- 状态机落库 ----------------
 
-    def transition_ticket(self, ticket_id, action, user,
-                          now: datetime | None = None):
+    def transition_ticket(self, ticket_id, action, user, now=None):
         with self.transaction():
-            row = self.conn.execute(
-                "SELECT t.*, d.area FROM ticket t JOIN device d ON d.id = t.point_id "
-                "WHERE t.id = ?", (ticket_id,)
-            ).fetchone()
-            if row is None:
+            t = self.session.get(orm.Ticket, ticket_id)
+            if t is None:
                 raise KeyError(f"ticket {ticket_id} not found")
+            area = self.device_area(t.point_id)
             from .auth import can_see
-            if not can_see(user, row["area"]):
+            if not can_see(user, area):
                 raise PermissionError("cross-area access denied")
-            patch = ticket_mod.transition(row, action, user.username, now)
-            self.conn.execute(
-                "UPDATE ticket SET status=?, assignee=?, updated_at=? WHERE id=?",
-                (patch["status"], patch["assignee"], patch["updated_at"], ticket_id),
-            )
+            old_status = t.status
+            patch = ticket_mod.transition(t.to_dict(), action, user.username, now)
+            t.status = patch["status"]
+            t.assignee = patch["assignee"]
+            t.updated_at = patch["updated_at"]
             self.audit(user.username, "ticket_transition", f"ticket:{ticket_id}",
-                       f"{row['status']}->{patch['status']}")
+                       f"{old_status}->{patch['status']}")
             return {"id": ticket_id, **patch}
 
-    def resolve_review(self, review_id, action, reviewer, note=None,
-                       now: datetime | None = None):
-        """confirm -> 补建工单；reject -> 记为误报，回流训练样本。"""
+    def resolve_review(self, review_id, action, reviewer, note=None, now=None):
         with self.transaction():
-            row = self.conn.execute(
-                "SELECT r.*, e.cls, e.score, e.point_id FROM review r "
-                "JOIN event e ON e.id = r.event_id WHERE r.id = ?", (review_id,)
-            ).fetchone()
-            if row is None:
+            r = self.session.get(orm.Review, review_id)
+            if r is None:
                 raise KeyError(f"review {review_id} not found")
-            if row["status"] != "PENDING":
+            if r.status != "PENDING":
                 raise ValueError("review already resolved")
+            e = self.session.get(orm.Event, r.event_id)
             status = "CONFIRMED" if action == "confirm" else "REJECTED"
-            stamp = (now or datetime.now()).isoformat(timespec="seconds")
-            self.conn.execute(
-                "UPDATE review SET status=?, reviewer=?, note=? WHERE id=?",
-                (status, reviewer, note, review_id),
-            )
+            r.status = status
+            r.reviewer = reviewer
+            r.note = note
             ticket_id = None
             if status == "CONFIRMED":
-                p = priority_of(row["cls"], row["score"], self.rules)
-                ticket_id = self.create_ticket(row["point_id"], row["cls"], p,
-                                               event_id=row["event_id"], now=now)
+                p = priority_of(e.cls, e.score, self.rules)
+                ticket_id = self.create_ticket(e.point_id, e.cls, p,
+                                               event_id=e.id, now=now)
             self.audit(reviewer, "review_" + status, f"review:{review_id}", note)
             return {"review_id": review_id, "status": status,
                     "ticket_id": ticket_id}
 
-    # ---------------- 巡检计划（防重跑） ----------------
+    # ---------------- 巡检计划 ----------------
 
     def claim_plan(self, now_ts: float):
-        """原子抢占：running=0 的 plan 才能被 UPDATE 命中，避免多 worker 重复巡检。"""
-        rows = self.conn.execute(
-            "SELECT id, device_id, interval_s FROM plan "
-            "WHERE enabled=1 AND running=0 "
-            "AND (last_run_at IS NULL OR last_run_at + interval_s <= ?)",
-            (now_ts,),
-        ).fetchall()
+        """原子抢占：running=0 才能被命中，避免多 worker 重复巡检。"""
+        candidates = self.session.scalars(
+            select(orm.Plan).where(
+                orm.Plan.enabled == 1,
+                orm.Plan.running == 0,
+                (orm.Plan.last_run_at.is_(None))
+                | (orm.Plan.last_run_at + orm.Plan.interval_s <= now_ts),
+            )
+        ).all()
+
         claimed = []
         with self.transaction():
-            for r in rows:
-                cur = self.conn.execute(
-                    "UPDATE plan SET running=1, last_run_at=? "
-                    "WHERE id=? AND running=0", (now_ts, r["id"]))
-                if cur.rowcount:
-                    claimed.append(dict(r))
+            for p in candidates:
+                res = self.session.execute(
+                    update(orm.Plan)
+                    .where(orm.Plan.id == p.id, orm.Plan.running == 0)
+                    .values(running=1, last_run_at=now_ts)
+                    .execution_options(synchronize_session=False)
+                )
+                if res.rowcount:
+                    claimed.append({"id": p.id, "device_id": p.device_id,
+                                    "interval_s": p.interval_s})
         return claimed
 
     def release_plan(self, plan_id: int):
-        self.conn.execute("UPDATE plan SET running=0 WHERE id=?", (plan_id,))
-        if not self.conn.in_transaction:
-            self.conn.commit()
+        self.session.execute(
+            update(orm.Plan).where(orm.Plan.id == plan_id).values(running=0)
+            .execution_options(synchronize_session=False))
+        self._commit_if_top()
 
     def recover_stale(self, now_ts: float, max_age_s: float = 600):
-        """进程崩溃会残留 running=1；超过 max_age 强制回收，避免计划永久卡死。"""
-        cur = self.conn.execute(
-            "UPDATE plan SET running=0 WHERE running=1 AND last_run_at < ?",
-            (now_ts - max_age_s,),
-        )
-        if not self.conn.in_transaction:
-            self.conn.commit()
-        return cur.rowcount
+        res = self.session.execute(
+            update(orm.Plan)
+            .where(orm.Plan.running == 1, orm.Plan.last_run_at < now_ts - max_age_s)
+            .values(running=0)
+            .execution_options(synchronize_session=False))
+        self._commit_if_top()
+        return res.rowcount
+
+    # ---------------- 压测自检 ----------------
+
+    def duplicate_ticket_violations(self) -> int:
+        sub = (select(orm.Event.dedup_key, func.count(orm.Ticket.id).label("n"))
+               .join(orm.Event, orm.Event.id == orm.Ticket.event_id)
+               .group_by(orm.Event.dedup_key).subquery())
+        return self.session.scalar(
+            select(func.count()).select_from(sub).where(sub.c.n > 1))
+
+    def unique_dedup_keys(self) -> int:
+        return self.session.scalar(
+            select(func.count(func.distinct(orm.Event.dedup_key))))

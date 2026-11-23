@@ -8,28 +8,32 @@
 
 巡检场景里 AI 通常只是某个环节，工程上真正重要的是：需求变了能不能接、线上出了问题能不能定位、代码别人能不能维护。所以本项目代码 80% 是传统系统工程，AI 只占 `ai/` 三个文件，且通过 `Detector` 协议与业务层解耦——换模型不改一行业务代码。
 
-## 快速开始（Python 3.10+，核心零第三方依赖）
+## 快速开始（Python 3.10+）
 
 ```bash
 cd InspectPlatform
+pip install -r requirements.txt                   # 唯一依赖：sqlalchemy>=2.0
 python -m unittest discover -s tests -v          # 29 个用例
 python bench.py --frames 2000 --workers 8         # 压测，生成 reports/metrics.json + 看板
 python run.py --no-serve                          # 只初始化 + 生成看板
 python run.py                                     # 起服务：http://127.0.0.1:8000/dashboard
 ```
 
-可选增强（本机 monai 3.11 环境已装 fastapi / onnxruntime / numpy）：
+数据层用 SQLAlchemy 2.0 ORM，除此之外全部是标准库（HTTP 服务、看板渲染、压测）。
+
+可选增强（需另装 fastapi / onnxruntime / numpy）：
 ```bash
 uvicorn app.api_fastapi:app --port 8000          # FastAPI 适配器，复用同一套业务逻辑
 ```
-隔离环境 3.13 未装这些包，不影响核心链路。Docker 文件已提供，**本机 Docker daemon 未启动，build/run 未执行验证**。
+Docker 文件已提供，**本机 Docker daemon 未启动，build/run 未执行验证**。
 
 ## 目录
 
 ```
 config.py                 阈值规则（读 configs/rules.json）
 configs/rules.json        置信度三档、去重窗口、SLA、超时——改配置不改代码
-app/db.py                 7 张表 + 索引 + 连接/事务
+app/db.py                 engine / session / 建表 / 种子数据
+app/orm.py                SQLAlchemy 模型：7 张表 + 索引 + 约束
 app/models.py             领域模型（Event.key 幂等键在这里）
 app/ticket.py             工单状态机 + SLA 逾期
 app/auth.py               RBAC + 行级数据权限
@@ -53,7 +57,7 @@ tests/                    6 个模块 / 29 个用例
   → 检测器异常/超时：标记 degraded + 写审计，主流程继续
   → 三档分流：<0.35 丢弃 | 0.35~0.75 转人工复核 | ≥0.75 自动建单
   → 幂等键 = 点位 + 缺陷类型 + 5 分钟时间桶 + 模型版本
-  → INSERT OR IGNORE + UNIQUE INDEX 双保险（防 check-then-act 竞态）
+  → on_conflict_do_nothing + UNIQUE 索引双保险（防 check-then-act 竞态）
   → 同一事务内：事件落库 + 建单 / 入复核队列
   → 复核确认补建工单；判误报导出训练反馈（/api/feedback）
 ```
@@ -89,23 +93,22 @@ tests/                    6 个模块 / 29 个用例
 demo token：`tk-admin`(全区域管理员) / `tk-op-a`(A 区操作员) / `tk-op-b` /
 `tk-audit`(只读+导出) / `tk-view-a`(A 区只读)。**固定 token 仅用于本地演示，生产接 SSO**。
 
-## 本机实测结果（Python 3.13.14 / Windows 11 / 纯标准库）
+## 本机实测结果（Python 3.11.4 / Windows 10 / SQLAlchemy 2.0 ORM）
 
 来源：`reports/metrics.json`，`python bench.py --frames 2000 --workers 8` 可复现。
-压测为单次运行，机器负载不同会有波动（同参数另一次为 17.887 s / 111.81 fps），
-**以下以最终落盘的 `metrics.json` 为准，其他文档已同步**。
+压测为单次运行，机器负载不同会有波动，**以下以最终落盘的 `metrics.json` 为准，其他文档已同步**。
 
 | 指标 | 实测值 |
 |---|---|
 | 压测规模 | 2000 帧 / 8 并发 / 6 点位 / 模拟 1 小时窗口 |
-| 总耗时 / 吞吐 | 19.348 s / **103.37 fps** |
-| 延迟 p50 / p95 / p99 / max | 73.679 / **106.603** / 134.307 / 218.788 ms |
-| 自动建单 / 转复核 / 低分丢弃 | 108 / 180 / 273 |
+| 总耗时 / 吞吐 | 15.398 s / **129.89 fps** |
+| 延迟 p50 / p95 / p99 / max | 60.99 / **73.56** / 93.5 / 129.86 ms |
+| 自动建单 / 转复核 / 低分丢弃 | 109 / 179 / 273（并发下 ±1 波动） |
 | 幂等去重命中 | 3428 次（去重率 92.25%） |
 | 唯一事件键 | 288（= 6 点位 × 4 缺陷 × 12 个 300s 时间桶，与设计一致） |
 | **重复建单违规** | **0** |
 | AI 全故障降级专项 | 50 帧全部标记 degraded，人工报修 50/50 成功，主流程成功率 **100%** |
-| 单元测试 | **29/29 通过**（7.41 s） |
+| 单元测试 | **29/29 通过**（1.06 s） |
 
 > 压测刻意让同一 (点位, 缺陷) 重复出现以压幂等路径，**92.25% 是负载重复率，不是业务优化前后的告警下降比例**，不要写成「告警下降 92%」。
 
